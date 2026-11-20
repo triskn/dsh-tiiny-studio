@@ -7,10 +7,14 @@ window.__ModuleLoader__.load({
 
     const T = {
       title: 'Tiiny Video',
-      subtitle: 'First frame + prompt → local MiniMax video',
+      subtitle: 'Generate short videos on your Tiiny',
       prompt: 'Prompt',
       promptPlaceholder: 'Describe the shot you want…',
-      firstFrame: 'First frame (optional)',
+      frameMode: 'Image placement',
+      firstFrame: 'First frame',
+      lastFrame: 'Last frame',
+      firstHint: 'Add a first frame, or leave the image empty to use just the prompt.',
+      lastHint: 'Add one ending reference. Final-frame matching depends on the device runtime.',
       drop: 'Drop an image here or click to choose',
       replace: 'Replace',
       clear: 'Remove',
@@ -33,6 +37,10 @@ window.__ModuleLoader__.load({
       saved: 'Saved',
       needPrompt: 'Enter a prompt first',
       recent: 'Recent videos',
+      delete: 'Delete',
+      deleting: 'Deleting…',
+      needLastFrame: 'Attach an image to use as the last frame',
+      invalidImage: 'Choose a PNG, JPEG or WebP image',
       preview: 'Preview',
       needKey: 'Add your Tiiny API key in Settings',
     }
@@ -200,6 +208,7 @@ window.__ModuleLoader__.load({
         alignItems: 'center',
         gap: 10,
         width: '100%',
+        minWidth: 0,
         padding: '8px 10px',
         border: 'none',
         borderRadius: 0,
@@ -296,12 +305,14 @@ window.__ModuleLoader__.load({
         const [settingsOpen, setSettingsOpen] = useState(false)
         const [prompt, setPrompt] = useState('')
         const [image, setImage] = useState(null)
+        const [frameMode, setFrameMode] = useState('first')
         const [settings, setSettings] = useState({ size: '832x480', seconds: 5, hasApiKey: false, model: '', baseUrl: '', outputDir: '', spec: FALLBACK_SPEC, sizes: Object.keys(FALLBACK_SPEC) })
         const [draft, setDraft] = useState({})
         const [job, setJob] = useState(null)
         const [busy, setBusy] = useState(false)
         const [error, setError] = useState('')
         const [history, setHistory] = useState([])
+        const [deletingId, setDeletingId] = useState(null)
         const [now, setNow] = useState(() => Date.now())
         const fileInput = useRef(null)
         const poll = useRef(null)
@@ -342,6 +353,7 @@ window.__ModuleLoader__.load({
               try {
                 const response = await fetch(`/tiiny-video/job?id=${encodeURIComponent(id)}`)
                 const value = await response.json()
+                if (!response.ok) throw new Error(value.error || 'Could not read the video job')
                 setJob(value)
                 if (value.status === 'completed' || value.status === 'failed') {
                   stopPolling()
@@ -389,6 +401,14 @@ window.__ModuleLoader__.load({
             setError(text.needPrompt)
             return
           }
+          if (frameMode === 'last' && !image) {
+            setError(text.needLastFrame)
+            return
+          }
+          if (frameMode === 'last' && !settings.supportsLastFrame) {
+            setError('Restart DeepSeek Harness to load Last frame support before generating.')
+            return
+          }
           const exported = (settings.spec || {})[settings.size] || []
           if (!exported.includes(settings.seconds)) {
             setError(text.badShape)
@@ -404,6 +424,7 @@ window.__ModuleLoader__.load({
               body: JSON.stringify({
                 prompt: prompt.trim(),
                 imageDataUrl: image?.dataUrl,
+                frameMode,
                 size: settings.size,
                 seconds: settings.seconds,
               }),
@@ -417,7 +438,37 @@ window.__ModuleLoader__.load({
             setBusy(false)
             setError(String(cause?.message || cause))
           }
-        }, [prompt, image, settings.size, settings.seconds, settings.spec, text.needPrompt, text.badShape, watch, refreshHistory])
+        }, [prompt, image, frameMode, settings.size, settings.seconds, settings.spec, settings.supportsLastFrame, text, watch, refreshHistory])
+
+        const deleteItem = useCallback(async (item) => {
+          if (deletingId) return
+          const message = item.file
+            ? 'Permanently delete ' + item.file + ' from the output folder and recent videos?'
+            : 'Remove this failed generation from recent videos?'
+          if (!window.confirm(message)) return
+          setDeletingId(item.id)
+          setError('')
+          try {
+            const response = await fetch('/tiiny-video/delete-video', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ id: item.id }),
+            })
+            const value = await response.json()
+            if (response.status === 404 && value.error === 'not found') {
+              throw new Error('Tiiny Video is using an older host version. Restart DeepSeek Harness, then try again.')
+            }
+            const alreadyGone = response.status === 404 && value.error === 'Video or history item not found'
+            if (!response.ok && !alreadyGone) throw new Error(value.error || 'Could not delete this item')
+            setHistory((items) => items.filter((entry) => entry.id !== item.id))
+            setJob((current) => current?.id === item.id ? null : current)
+            await refreshHistory()
+          } catch (cause) {
+            setError(String(cause?.message || cause))
+          } finally {
+            setDeletingId(null)
+          }
+        }, [deletingId, refreshHistory])
 
         const cancelJob = useCallback(async () => {
           if (!job?.id) return
@@ -457,9 +508,18 @@ window.__ModuleLoader__.load({
         }, [draft])
 
         const pick = useCallback(async (file) => {
-          if (!file || !String(file.type).startsWith('image/')) return
-          const dataUrl = await readFileAsDataUrl(file)
-          setImage({ dataUrl, name: file.name })
+          if (!file) return
+          if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+            setError(T.invalidImage)
+            return
+          }
+          try {
+            const dataUrl = await readFileAsDataUrl(file)
+            setImage({ dataUrl, name: file.name })
+            setError('')
+          } catch (cause) {
+            setError(String(cause?.message || cause))
+          }
         }, [])
 
         const phaseLabel = job ? (PHASE[job.phase] || job.phase) : ''
@@ -491,7 +551,10 @@ window.__ModuleLoader__.load({
         }
 
         const jobElapsed = job ? elapsedOf(job) : ''
-        const statusText = job && busy ? `${phaseLabel} ${progress}%${jobElapsed ? ` · ${jobElapsed}` : ''}` : text.subtitle
+        const jobFrame = job?.frameMode === 'last' ? text.lastFrame : job?.frameMode === 'first' ? text.firstFrame : ''
+        const statusText = job && busy
+          ? [jobFrame, `${phaseLabel} ${progress}%`, jobElapsed].filter(Boolean).join(' · ')
+          : text.subtitle
 
         const header = page
           ? h(
@@ -520,7 +583,7 @@ window.__ModuleLoader__.load({
                 'div',
                 { style: { display: 'flex', gap: 10 } },
                 h('button', { type: 'button', style: S.link, onClick: () => fileInput.current?.click() }, text.replace),
-                h('button', { type: 'button', style: S.link, onClick: () => setImage(null) }, text.clear),
+                h('button', { type: 'button', style: S.link, onClick: () => { setImage(null); setError('') } }, text.clear),
               ),
             )
           : h(
@@ -596,7 +659,8 @@ window.__ModuleLoader__.load({
             return `${PHASE[item.phase] || 'Rendering'}${item.progress ? ` ${item.progress}%` : ''}${elapsed ? ` · ${elapsed}` : ''}`
           }
           if (item.status === 'failed') return 'Failed'
-          return [item.size, item.seconds ? `${item.seconds}s` : ''].filter(Boolean).join(' ')
+          const frame = item.frameMode === 'last' ? text.lastFrame : item.frameMode === 'first' ? text.firstFrame : ''
+          return [frame, item.size, item.seconds ? `${item.seconds}s` : ''].filter(Boolean).join(' · ')
         }
         const statusColor = (item) =>
           item.status === 'completed'
@@ -624,22 +688,28 @@ window.__ModuleLoader__.load({
               ),
               history.slice(0, 10).map((item, index) =>
                 h(
-                  'button',
-                  {
-                    key: item.id,
-                    type: 'button',
-                    title: item.error || item.file || '',
-                    style: {
-                      ...S.recentRow,
-                      ...(index ? S.recentRowDivider : null),
-                      ...(job?.id === item.id ? S.recentRowActive : null),
+                  'div',
+                  { key: item.id, style: { display: 'flex', alignItems: 'center', ...(index ? S.recentRowDivider : null), ...(job?.id === item.id ? S.recentRowActive : null) } },
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      title: item.error || item.file || '',
+                      style: { ...S.recentRow, flex: 1 },
+                      onClick: () => setJob(item),
                     },
-                    onClick: () => setJob(item),
-                  },
-                  h('span', { style: { ...S.dot, background: statusColor(item) } }),
-                  h('span', { style: S.recentTime }, clockLabel(item)),
-                  h('span', { style: S.recentPrompt }, promptLabel(item)),
-                  h('span', { style: S.recentMeta }, metaLabel(item)),
+                    h('span', { style: { ...S.dot, background: statusColor(item) } }),
+                    h('span', { style: S.recentTime }, clockLabel(item)),
+                    h('span', { style: S.recentPrompt }, promptLabel(item)),
+                    h('span', { style: S.recentMeta }, metaLabel(item)),
+                  ),
+                  item.status === 'running' ? null : h('button', {
+                    type: 'button',
+                    style: { ...S.link, flexShrink: 0, margin: '0 10px', color: 'var(--dsw-alias-state-error-primary)' },
+                    'aria-label': 'Delete ' + promptLabel(item),
+                    disabled: Boolean(deletingId),
+                    onClick: () => void deleteItem(item),
+                  }, deletingId === item.id ? text.deleting : text.delete),
                 ),
               ),
             )
@@ -653,8 +723,18 @@ window.__ModuleLoader__.load({
             'div',
             { style: S.body },
             settingsOpen ? null : h('div', null, h('div', { style: S.label }, text.prompt), h('textarea', { style: S.textarea, value: prompt, placeholder: text.promptPlaceholder, onChange: (e) => setPrompt(e.target.value) })),
-            h('input', { ref: fileInput, type: 'file', accept: 'image/*', style: { display: 'none' }, onChange: (e) => pick(e.target.files?.[0]) }),
-            settingsOpen ? null : h('div', null, h('div', { style: S.label }, text.firstFrame), imageBlock),
+            h('input', { ref: fileInput, type: 'file', accept: 'image/png,image/jpeg,image/webp', style: { display: 'none' }, onChange: (e) => { void pick(e.target.files?.[0]); e.target.value = '' } }),
+            settingsOpen ? null : h('div', { style: S.field },
+              h('label', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+                h('span', { style: S.label }, text.frameMode),
+                h('select', { style: S.input, value: frameMode, onChange: (e) => { setFrameMode(e.target.value); setError('') } },
+                  h('option', { value: 'first' }, text.firstFrame),
+                  h('option', { value: 'last' }, text.lastFrame),
+                ),
+              ),
+              h('div', { style: S.meta }, frameMode === 'last' ? text.lastHint : text.firstHint),
+              imageBlock,
+            ),
             h(
               'div',
               { style: S.row },

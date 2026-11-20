@@ -1,7 +1,7 @@
 {
   "name": "dsh-tiiny-video",
   "version": "1.0.0",
-  "description": "Tiiny Video for DeepSeek Harness: write a prompt, optionally attach a first frame, and a MiniMax video model running on your Tiiny device renders the clip to disk.",
+  "description": "Tiiny Video for DeepSeek Harness. Generate short videos on your Tiiny device from a prompt and one optional first- or last-frame image.",
   "type": "module",
   "license": "MIT",
   "author": "Tiiny",

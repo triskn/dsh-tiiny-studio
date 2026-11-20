@@ -12,6 +12,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 let dataDir
+let outputDir
 let route
 
 before(async () => {
@@ -19,7 +20,8 @@ before(async () => {
   // Read by the module at import time, so it has to be set before the import.
   process.env.TIINY_VIDEO_HOME = dataDir
   // Keep /jobs away from whatever the developer really rendered.
-  process.env.TIINY_OUTPUT_DIR = await fs.mkdtemp(path.join(os.tmpdir(), 'tiiny-video-out-'))
+  outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tiiny-video-out-'))
+  process.env.TIINY_OUTPUT_DIR = outputDir
   delete process.env.TIINY_API_KEY
   delete process.env.TIINY_BASE_URL
 
@@ -35,6 +37,7 @@ before(async () => {
 
 after(async () => {
   await fs.rm(dataDir, { recursive: true, force: true })
+  await fs.rm(outputDir, { recursive: true, force: true })
 })
 
 function request({ method = 'GET', pathname = '/', body } = {}) {
@@ -68,11 +71,16 @@ async function call(options) {
   return { status: res.statusCode, json: res.body ? JSON.parse(res.body) : null }
 }
 
+function removeVideo(id) {
+  return call({ method: 'POST', pathname: '/delete-video', body: { id } })
+}
+
 test('GET /settings returns defaults without the API key', async () => {
   const { status, json } = await call({ pathname: '/settings' })
   assert.equal(status, 200)
   assert.equal(json.hasApiKey, false)
   assert.equal(json.apiKey, undefined)
+  assert.equal(json.supportsLastFrame, true)
   assert.equal(json.size, '832x480')
   assert.deepEqual(json.sizes, ['832x480', '480x832', '1344x768', '768x1344'])
 })
@@ -135,4 +143,103 @@ test('GET /jobs starts empty', async () => {
 test('unknown routes are a 404, not a crash', async () => {
   const { status } = await call({ pathname: '/nope' })
   assert.equal(status, 404)
+})
+
+const reference = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jM1sAAAAASUVORK5CYII='
+
+test('one image goes to the requested frame and the same job survives a temporary status outage', async (t) => {
+  const submitted = []
+  let statusChecks = 0
+  const mockFile = Buffer.from('video test fixture')
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (url.endsWith('/videos')) {
+      submitted.push(options)
+      return Response.json({ id: 'device-test-job', status: submitted.length === 1 ? 'in_progress' : 'completed' })
+    }
+    if (url.endsWith('/videos/device-test-job')) {
+      statusChecks++
+      if (statusChecks === 1) throw new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+      if (statusChecks === 2) return Response.json({ error: { message: 'Temporary service outage' } }, { status: 503 })
+      return Response.json({ id: 'device-test-job', status: 'completed' })
+    }
+    if (url.endsWith('/content')) return new Response(mockFile)
+    throw new Error('Unexpected request: ' + url)
+  })
+
+  for (const frameMode of ['last', undefined]) {
+    const accepted = await call({
+      method: 'POST', pathname: '/generate',
+      body: { prompt: 'Move a ball', imageDataUrl: reference, frameMode, seconds: 5 },
+    })
+    assert.equal(accepted.status, 200)
+    const { id } = accepted.json
+    assert.equal(accepted.json.frameMode, frameMode || 'first')
+    const historyFile = path.join(dataDir, 'history.json')
+    let saved
+    for (let attempt = 0; attempt < 1500 && !saved; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      const history = JSON.parse(await fs.readFile(historyFile, 'utf8').catch(() => '[]'))
+      saved = history.find((entry) => entry.id === id)
+    }
+    assert.equal(saved?.status, 'completed')
+    assert.equal(saved.frameMode, frameMode || 'first')
+    assert.deepEqual(await fs.readFile(path.join(outputDir, saved.file)), mockFile)
+    assert.equal((await removeVideo(id)).status, 200)
+    assert.equal((await call({ pathname: '/job?id=' + id })).status, 404)
+    assert.deepEqual((await call({ pathname: '/jobs' })).json.jobs, [])
+    await assert.rejects(fs.stat(path.join(outputDir, saved.file)), { code: 'ENOENT' })
+  }
+
+  const [tail, first] = submitted
+  assert.equal(statusChecks, 3)
+  assert.equal(tail.headers['content-type'], 'application/json')
+  assert.deepEqual(JSON.parse(tail.body), {
+    model: 'lightx2v/MiniMax-H3-Turbo', prompt: 'Move a ball', size: '832x480', seconds: 5, last_frame: reference,
+  })
+  assert.equal(first.body.get('input_reference').name, 'first-frame.png')
+  assert.equal(first.body.get('last_frame'), null)
+})
+
+test('tail mode requires an image and cannot request both placements', async () => {
+  for (const [body, message] of [
+    [{ frameMode: 'last' }, /attach an image/i],
+    [{ frameMode: 'both', imageDataUrl: reference }, /either/i],
+    [{ frameMode: 'last', imageDataUrl: 'data:image/gif;base64,AAAA' }, /png, jpeg or webp/i],
+  ]) {
+    const result = await call({ method: 'POST', pathname: '/generate', body: { prompt: 'Test movement', ...body } })
+    assert.equal(result.status, 400)
+    assert.match(result.json.error, message)
+  }
+})
+
+test('custom size tables still enforce a seven-second cap', async () => {
+  const settingsPath = path.join(dataDir, 'settings.json')
+  const original = await fs.readFile(settingsPath, 'utf8')
+  try {
+    const custom = { ...JSON.parse(original), spec: { '832x480': [5, 7, 8] } }
+    await fs.writeFile(settingsPath, JSON.stringify(custom))
+    assert.deepEqual((await call({ pathname: '/settings' })).json.spec['832x480'], [5, 7])
+    const result = await call({ method: 'POST', pathname: '/generate', body: { prompt: 'Test', seconds: 8 } })
+    assert.equal(result.status, 400)
+  } finally {
+    await fs.writeFile(settingsPath, original)
+  }
+})
+
+test('delete handles disk-only videos and failed history without touching other files', async () => {
+  const saved = path.join(outputDir, 'existing clip.mp4')
+  const unrelated = path.join(outputDir, 'notes.txt')
+  await fs.writeFile(saved, 'video fixture')
+  await fs.writeFile(unrelated, 'keep')
+  const history = path.join(dataDir, 'history.json')
+  await fs.writeFile(history, JSON.stringify([{ id: 'failed-test', status: 'failed', error: 'test' }]))
+  for (const id of ['file:../existing clip.mp4', 'file:..\\existing clip.mp4', 'file:notes.txt']) {
+    assert.equal((await removeVideo(id)).status, 400)
+  }
+  assert.equal((await removeVideo('file:existing clip.mp4')).status, 200)
+  assert.equal((await removeVideo('file:existing clip.mp4')).status, 200)
+  assert.equal((await removeVideo('failed-test')).status, 200)
+  await assert.rejects(fs.stat(saved), { code: 'ENOENT' })
+  assert.equal(await fs.readFile(unrelated, 'utf8'), 'keep')
+  assert.deepEqual((await call({ pathname: '/jobs' })).json.jobs, [])
 })

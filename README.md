@@ -1,17 +1,17 @@
 # dsh-tiiny-video
 
-Generate videos on your Tiiny device from DeepSeek Harness (DSH). Write a prompt, optionally add a first-frame image, and preview the finished clip in the conversation sidebar. Videos are saved to your computer.
+Generate videos on your Tiiny device from DeepSeek Harness (DSH). Write a prompt, optionally add one first- or last-frame image, and preview the finished clip in the conversation sidebar. Videos are saved to your computer.
 
-[Installation](#installation) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Development](#development)
+[Installation](#installation) · [First and last frames](#choose-the-first-or-last-frame) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Development](#development)
 
 ## Features
 
-- **Text-to-video and image-to-video:** generate from a prompt, with an optional first-frame image.
-- **Resolution and duration checks:** validate requests against a configurable list of combinations exported by your device.
+- **Text-to-video and image-to-video:** generate from a prompt alone or guide the clip with one first- or last-frame image.
+- **Resolution and duration checks:** choose a supported resolution and a duration of up to seven seconds. The default durations are 5, 6, and 7 seconds.
 - **Progress and cancellation:** follow submission, queueing, generation, and download; cancel a job from the panel.
 - **Local playback:** save clips as `tiiny-video-<timestamp>-<id>.mp4` and preview them in the sidebar.
 - **Playback repair:** optionally use FFmpeg to remux clips for seeking and duration metadata.
-- **History:** retain recent generation records and discover existing MP4 files in the output folder.
+- **Recent videos:** preview local MP4s, find existing clips in the output folder, and remove videos or failed entries from the list. Confirming deletion of a saved video also deletes the local MP4.
 
 The plugin sends prompts and reference images to the API endpoint you configure. With a local Tiiny endpoint, the device handles generation and the plugin saves the result locally. If you configure a remote endpoint, its data handling policies apply.
 
@@ -73,6 +73,22 @@ Run `pnpm install` in the profile directory using DSH's bundled pnpm, then resta
 
 The package has not been published to npm as part of this release. Use the GitHub or local installation method above.
 
+## Choose the first or last frame
+
+1. In DSH, open **Tiiny Video** and enter a prompt describing the motion.
+2. Under **Image placement**, choose **First frame** or **Last frame**.
+3. Drop a single PNG, JPEG, or WebP image into the upload area, or click the area to pick one. Use **Replace** to choose a different image.
+4. Select a supported resolution and duration, then click **Generate video**.
+
+| Mode | When to use it |
+| --- | --- |
+| **First frame** | Start from the image and describe what should happen next. For text-to-video, leave the image field empty. |
+| **Last frame** | Upload the image you want to end on and describe what should happen before it. This mode requires one image and a video model that supports an ending reference. |
+
+**Each generation accepts at most one reference image.** Choose a single placement for that image. To compare first- and last-frame behavior, run two separate generations.
+
+An ending reference guides the final frame. The model and output resolution can affect how closely the result matches the source.
+
 ## Configuration
 
 Change settings in the panel or edit `~/.tiiny-video/settings.json`. The plugin writes settings with file mode `0600` on systems that support Unix file permissions. The API key is not returned by the settings endpoint or displayed back in the panel.
@@ -116,7 +132,7 @@ Runtime data lives outside the installed package so package upgrades do not repl
 The plugin has two parts:
 
 - **Host (`index.js`):** submits jobs to the device, polls progress, downloads clips, manages history, and serves local routes.
-- **Client (`client.js`):** registers the sidebar panel with prompt input, an optional first-frame image, resolution and duration controls, progress, and playback.
+- **Client (`client.js`):** registers the sidebar panel with prompt input, a single reference image, a first- or last-frame selector, resolution and duration controls, progress, playback, and deletion.
 
 The panel uses these host routes under `/tiiny-video`:
 
@@ -128,11 +144,13 @@ The panel uses these host routes under `/tiiny-video`:
 | `GET` | `/job?id=` | Read one job. |
 | `GET` | `/jobs` | List active jobs, history, and discovered output files. |
 | `POST` | `/cancel` | Cancel a local job and attempt device-side cancellation. |
+| `POST` | `/delete-video` | Delete a saved local clip and its history entry, or remove a failed entry. |
 | `GET` | `/file/<name>` | Stream a saved clip with HTTP Range support. |
 
 The device API calls are relative to `baseUrl`:
 
-- `POST /videos`: multipart fields `model`, `prompt`, `size`, `seconds`, and optional `input_reference`.
+- `POST /videos` in **First frame** mode uses multipart form data with `model`, `prompt`, `size`, `seconds`, and the optional `input_reference` image.
+- `POST /videos` in **Last frame** mode uses JSON with `model`, `prompt`, `size`, `seconds`, and one `last_frame` image as a data URI.
 - `GET /videos/{id}`: poll status and progress.
 - `GET /videos/{id}/content`: download the MP4.
 - `DELETE /videos/{id}`: request cancellation.
@@ -157,7 +175,7 @@ Check that `dsh-tiiny-video` is included in your profile's bundles, dependency i
 
 ## Validation scope
 
-The initial publication passed **7 local host-route smoke tests**, JavaScript syntax checks, and an npm package dry run. Real-device generation, panel loading after a DSH restart, and Windows / Linux compatibility were not revalidated for that publication. The CI workflow defines checks for macOS, Windows, and Linux with Node.js 20 and 22; this is not a claim that all platform checks have passed.
+Host-route tests cover single-image routing, retries after temporary status errors, and video deletion. First- and last-frame generation were tested with MiniMax-H3-Turbo on a Tiiny device at 832×480 using the five-second setting. The CI workflow checks Node.js 20 and 22 on macOS, Windows, and Linux.
 
 The default resolution and duration table comes from local configuration. Confirm that your device supports those combinations before generating a clip.
 

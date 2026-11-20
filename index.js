@@ -53,6 +53,8 @@ const DEFAULT_SPEC = {
   '1344x768': [5, 6, 7],
   '768x1344': [5, 6, 7],
 }
+const MAX_SECONDS = 7
+const IMAGE_EXTENSIONS = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }
 
 const BUCKET_ERROR = /no exported bucket fits a request needing \[audio=(\d+), cond_video=(\d+), target_video=(\d+)\]/i
 const EXPORTED_ERROR = /this model was exported for \[([^\]]+)\]/i
@@ -136,7 +138,7 @@ function probeShape(filePath) {
         child.kill('SIGKILL')
       } catch {}
       done(null)
-    }, 6000)
+    }, 6000).unref()
   })
 }
 
@@ -181,7 +183,7 @@ function remuxFaststart(filePath) {
         child.kill('SIGKILL')
       } catch {}
       void finish(false)
-    }, 120000)
+    }, 120000).unref()
   })
 }
 
@@ -203,6 +205,29 @@ async function readHistory() {
   }
 }
 
+let historyUpdate = Promise.resolve()
+
+function serializeHistoryUpdate(update) {
+  const result = historyUpdate.then(update)
+  historyUpdate = result.catch(() => {})
+  return result
+}
+
+async function writeHistory(history) {
+  await fs.mkdir(DATA_DIR, { recursive: true, mode: 0o700 })
+  const temporary = path.join(DATA_DIR, '.history.json.tmp')
+  try {
+    await fs.writeFile(temporary, JSON.stringify(history, null, 2), { mode: 0o600 })
+    await fs.rename(temporary, HISTORY_FILE)
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => {})
+  }
+}
+
+function isVideoName(name) {
+  return typeof name === 'string' && name.endsWith('.mp4') && !name.startsWith('.') && !/[\/\\:\0]/.test(name)
+}
+
 /** Every rendered clip in the output folder, including ones this Host never ran. */
 async function listRenderedFiles(settings) {
   const dir = settings.outputDir || DEFAULTS.outputDir
@@ -217,7 +242,8 @@ async function listRenderedFiles(settings) {
     if (!name.endsWith('.mp4') || name.startsWith('.')) continue
     try {
       const filePath = path.join(dir, name)
-      const stat = await fs.stat(filePath)
+      const stat = await fs.lstat(filePath)
+      if (!stat.isFile()) continue
       const cacheKey = `${filePath}:${stat.mtimeMs}:${stat.size}`
       let shape = probeCache.get(cacheKey)
       if (shape === undefined) {
@@ -251,6 +277,7 @@ async function recordHistory(job) {
       prompt: job.prompt,
       size: job.size,
       seconds: job.seconds,
+      frameMode: job.frameMode,
       file: job.file,
       bytes: job.bytes,
       error: job.error,
@@ -258,11 +285,52 @@ async function recordHistory(job) {
       createdAt: job.createdAt,
       finishedAt: job.finishedAt || Date.now(),
     }
-    const history = (await readHistory()).filter((item) => item && item.id !== entry.id)
-    history.unshift(entry)
-    await fs.mkdir(DATA_DIR, { recursive: true, mode: 0o700 })
-    await fs.writeFile(HISTORY_FILE, JSON.stringify(history.slice(0, 50), null, 2), { mode: 0o600 })
+    await serializeHistoryUpdate(async () => {
+      const history = (await readHistory()).filter((item) => item && item.id !== entry.id)
+      history.unshift(entry)
+      await writeHistory(history.slice(0, 50))
+    })
   } catch {}
+}
+
+async function deleteVideo(id) {
+  return serializeHistoryUpdate(async () => {
+    const live = jobs.get(id)
+    if (live?.pending || live?.status === 'running') {
+      return { status: 409, error: 'Wait for this job to finish before deleting it' }
+    }
+    const history = (await readHistory()).filter(Boolean)
+    const entry = live || history.find((item) => item.id === id)
+    const fromFolder = id.startsWith('file:')
+    const name = fromFolder ? id.slice('file:'.length) : entry?.file
+    if (!fromFolder && !entry) return { status: 404, error: 'Video or history item not found' }
+    if (fromFolder || name) {
+      if (!isVideoName(name)) return { status: 400, error: 'Invalid video filename' }
+      const { outputDir } = await readSettings()
+      const filePath = path.resolve(outputDir || DEFAULTS.outputDir, name)
+      if (live?.filePath && path.resolve(live.filePath) !== filePath) {
+        return { status: 409, error: 'This clip is in a different output folder' }
+      }
+      if ([...jobs.values()].some((job) => job.pending && job.file === name)) {
+        return { status: 409, error: 'Wait for this job to finish before deleting it' }
+      }
+      try {
+        if (!(await fs.lstat(filePath)).isFile()) return { status: 400, error: 'Only regular video files can be deleted' }
+        await fs.unlink(filePath)
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error
+        // The folder or another view may have removed the clip after listing it.
+        // The validated filename is already absent, so finish cleaning the list.
+      }
+    }
+    const matches = (item) => item.id === id || Boolean(name && name === item.file)
+    const remaining = history.filter((item) => !matches(item))
+    if (remaining.length !== history.length) await writeHistory(remaining)
+    for (const item of jobs.values()) {
+      if (matches(item)) jobs.delete(item.id)
+    }
+    return { status: 200 }
+  })
 }
 
 /** Sanitise the spec table: known resolutions only, ascending, de-duplicated durations. */
@@ -271,7 +339,7 @@ function resolveSpec(settings) {
   const spec = {}
   for (const size of SIZES) {
     const raw = stored && Array.isArray(stored[size]) ? stored[size] : DEFAULT_SPEC[size]
-    const values = [...new Set(raw.map(Number).filter((value) => Number.isFinite(value) && value > 0 && value <= 60))]
+    const values = [...new Set(raw.map(Number).filter((value) => Number.isInteger(value) && value > 0 && value <= MAX_SECONDS))]
       .sort((a, b) => a - b)
     if (values.length) spec[size] = values
   }
@@ -338,6 +406,7 @@ function publicSettings(s) {
     seconds: s.seconds,
     outputDir: s.outputDir,
     hasApiKey: Boolean(s.apiKey),
+    supportsLastFrame: true,
     spec: s.spec,
     sizes: Object.keys(s.spec),
   }
@@ -366,12 +435,15 @@ async function readJsonBody(req, limit = 24 * 1024 * 1024) {
 }
 
 function dataUrlToBlob(dataUrl) {
-  const match = /^data:([a-z0-9.+-]+\/[a-z0-9.+-]+);base64,([\s\S]+)$/i.exec(String(dataUrl || '').trim())
+  const match = /^data:(image\/(?:png|jpeg|webp));base64,([a-z0-9+/]+={0,2})$/i.exec(String(dataUrl || '').trim())
   if (!match) return undefined
   const mime = match[1].toLowerCase()
-  const ext = mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png'
-  return { mime, ext, bytes: Buffer.from(match[2], 'base64') }
+  const bytes = Buffer.from(match[2], 'base64')
+  if (!bytes.length || bytes.toString('base64').replace(/=+$/, '') !== match[2].replace(/=+$/, '')) return undefined
+  return { mime, ext: IMAGE_EXTENSIONS[mime], bytes }
 }
+
+class VideoStatusUnavailable extends Error {}
 
 class TiinyApi {
   constructor(settings) {
@@ -392,16 +464,23 @@ class TiinyApi {
     return response
   }
 
-  async create({ prompt, image, size, seconds, model }) {
-    const form = new FormData()
-    form.set('model', model)
-    form.set('prompt', prompt)
-    form.set('size', size)
-    form.set('seconds', String(seconds))
-    if (image) {
-      form.set('input_reference', new Blob([image.bytes], { type: image.mime }), `first-frame.${image.ext}`)
+  async create({ prompt, image, frameMode, size, seconds, model }) {
+    let body
+    let headers
+    if (frameMode === 'last') {
+      // Tiiny's video API accepts one ending reference as a last_frame data URI.
+      const lastFrame = 'data:' + image.mime + ';base64,' + image.bytes.toString('base64')
+      headers = { 'content-type': 'application/json' }
+      body = JSON.stringify({ model, prompt, size, seconds, last_frame: lastFrame })
+    } else {
+      body = new FormData()
+      body.set('model', model)
+      body.set('prompt', prompt)
+      body.set('size', size)
+      body.set('seconds', String(seconds))
+      if (image) body.set('input_reference', new Blob([image.bytes], { type: image.mime }), 'first-frame.' + image.ext)
     }
-    const response = await this.request('/videos', { method: 'POST', body: form })
+    const response = await this.request('/videos', { method: 'POST', headers, body })
     const payload = await response.json().catch(() => ({}))
     if (!response.ok || payload?.error) {
       const message = payload?.error?.message || payload?.error || `HTTP ${response.status}`
@@ -411,11 +490,25 @@ class TiinyApi {
   }
 
   async retrieve(id) {
-    const response = await this.request(`/videos/${encodeURIComponent(id)}`, { timeoutMs: 30000 })
-    const payload = await response.json().catch(() => ({}))
+    let response
+    try {
+      response = await this.request(`/videos/${encodeURIComponent(id)}`, { timeoutMs: 30000 })
+    } catch (error) {
+      if (error instanceof TypeError || ['AbortError', 'TimeoutError'].includes(error?.name)) {
+        throw new VideoStatusUnavailable('The device temporarily did not answer the status request')
+      }
+      throw error
+    }
+    const payload = await response.json().catch(() => null)
+    if (response.status >= 500 || [408, 429].includes(response.status)) {
+      throw new VideoStatusUnavailable('Temporary device status error: HTTP ' + response.status)
+    }
     if (!response.ok || payload?.error) {
       const message = payload?.error?.message || payload?.error || `HTTP ${response.status}`
       throw new Error(typeof message === 'string' ? message : JSON.stringify(message))
+    }
+    if (typeof payload?.status !== 'string') {
+      throw new VideoStatusUnavailable('The device returned an incomplete status response')
     }
     return payload
   }
@@ -452,7 +545,8 @@ async function runJob(jobId, request) {
     job.phase = 'submitting'
     const created = await api.create({
       prompt: request.prompt,
-      image: dataUrlToBlob(request.imageDataUrl),
+      image: request.image,
+      frameMode: job.frameMode,
       size: job.size,
       seconds: job.seconds,
       model,
@@ -463,6 +557,7 @@ async function runJob(jobId, request) {
 
     const deadline = Date.now() + 45 * 60 * 1000
     let snapshot = created
+    let lastStatusError
     while (Date.now() < deadline) {
       if (job.cancelled) throw new Error('cancelled')
       if (snapshot.status === 'completed') break
@@ -470,11 +565,22 @@ async function runJob(jobId, request) {
         throw new Error(snapshot.error?.message || 'generation failed')
       }
       await new Promise((resolve) => setTimeout(resolve, 3000))
-      snapshot = await api.retrieve(created.id)
+      try {
+        snapshot = await api.retrieve(created.id)
+        lastStatusError = undefined
+      } catch (error) {
+        if (!(error instanceof VideoStatusUnavailable)) throw error
+        lastStatusError = error
+        // A status request timing out does not cancel the device's render.
+        // Keep the last known state and retry the same job until the deadline.
+        continue
+      }
       job.phase = snapshot.status
       job.progress = Number(snapshot.progress) || 0
     }
-    if (snapshot.status !== 'completed') throw new Error('generation timed out')
+    if (snapshot.status !== 'completed') {
+      throw new Error(lastStatusError ? 'generation timed out: ' + lastStatusError.message : 'generation timed out')
+    }
 
     job.phase = 'downloading'
     const bytes = await api.content(created.id)
@@ -482,8 +588,14 @@ async function runJob(jobId, request) {
     await fs.mkdir(dir, { recursive: true })
     const fileName = `tiiny-video-${stamp()}-${jobId.slice(0, 6)}.mp4`
     const filePath = path.join(dir, fileName)
-    await fs.writeFile(filePath, bytes)
-    await remuxFaststart(filePath)
+    const temporary = path.join(dir, '.' + fileName)
+    try {
+      await fs.writeFile(temporary, bytes)
+      await remuxFaststart(temporary)
+      await fs.rename(temporary, filePath)
+    } finally {
+      await fs.rm(temporary, { force: true }).catch(() => {})
+    }
 
     job.status = 'completed'
     job.phase = 'completed'
@@ -500,6 +612,8 @@ async function runJob(jobId, request) {
     job.error = raw === 'cancelled' ? raw : humanizeDeviceError(raw, shape)
     job.finishedAt = Date.now()
     await recordHistory(job)
+  } finally {
+    job.pending = false
   }
 }
 
@@ -516,6 +630,7 @@ function jobView(job) {
     prompt: job.prompt,
     size: job.size,
     seconds: job.seconds,
+    frameMode: job.frameMode,
     createdAt: job.createdAt,
     finishedAt: job.finishedAt,
   }
@@ -552,6 +667,12 @@ const route = {
         const body = await readJsonBody(req)
         const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : ''
         if (!prompt) return json(res, 400, { error: 'prompt is required' })
+        if (body.frameMode !== undefined && !['first', 'last'].includes(body.frameMode)) {
+          return json(res, 400, { error: 'Choose either a first frame or a last frame' })
+        }
+        const image = dataUrlToBlob(body.imageDataUrl)
+        if (body.imageDataUrl != null && !image) return json(res, 400, { error: 'Choose a PNG, JPEG or WebP image' })
+        if (body.frameMode === 'last' && !image) return json(res, 400, { error: 'Attach an image to use as the last frame' })
         const settings = await readSettings()
         if (!settings.apiKey) return json(res, 400, { error: 'Tiiny API key is not configured' })
 
@@ -580,10 +701,12 @@ const route = {
           prompt,
           size,
           seconds,
+          frameMode: image ? body.frameMode || 'first' : undefined,
+          pending: true,
           createdAt: Date.now(),
         }
         jobs.set(id, job)
-        void runJob(id, { ...body, size, seconds })
+        void runJob(id, { prompt, image, model: body.model })
         return json(res, 200, jobView(job))
       }
       if (req.method === 'POST' && pathname === '/cancel') {
@@ -605,6 +728,13 @@ const route = {
         const job = jobs.get(url.searchParams.get('id') || '')
         if (!job) return json(res, 404, { error: 'unknown job' })
         return json(res, 200, jobView(job))
+      }
+      if (req.method === 'POST' && pathname === '/delete-video') {
+        const body = await readJsonBody(req, 64 * 1024)
+        const id = body?.id
+        if (typeof id !== 'string' || !id.trim()) return json(res, 400, { error: 'Video or history ID is required' })
+        const result = await deleteVideo(id)
+        return json(res, result.status, result.error ? { error: result.error } : { deleted: true })
       }
       if (req.method === 'GET' && pathname === '/jobs') {
         const live = [...jobs.values()].map(jobView)

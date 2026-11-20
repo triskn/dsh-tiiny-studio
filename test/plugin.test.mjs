@@ -99,8 +99,10 @@ test('POST /settings persists the key but never echoes it', async () => {
   const onDisk = JSON.parse(await fs.readFile(path.join(dataDir, 'settings.json'), 'utf8'))
   assert.equal(onDisk.apiKey, 'test-key')
 
-  const stat = await fs.stat(path.join(dataDir, 'settings.json'))
-  assert.equal(stat.mode & 0o077, 0, 'settings file must not be world readable')
+  if (process.platform !== 'win32') {
+    const stat = await fs.stat(path.join(dataDir, 'settings.json'))
+    assert.equal(stat.mode & 0o077, 0, 'settings file must not be readable by the group or others')
+  }
 
   const reread = await call({ pathname: '/settings' })
   assert.equal(reread.json.hasApiKey, true)

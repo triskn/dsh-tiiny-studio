@@ -128,7 +128,7 @@ function device(t) {
 }
 
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'tiiny-studio-'))
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'tiiny-studio-'))
   const media = path.join(root, '.tiiny-video'), mesh = path.join(root, '.tiiny-3d')
   const env = {
     TIINY_VIDEO_HOME: media, TIINY_BASE_URL: MEDIA + '/v1', TIINY_OUTPUT_DIR: path.join(root, 'media-output'), TIINY_API_KEY: '',

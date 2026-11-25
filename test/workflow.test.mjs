@@ -95,7 +95,7 @@ async function dispatch(handler, pathname, body) {
 }
 
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'tiiny-workflow-'))
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'tiiny-workflow-'))
   const home = path.join(root, 'home'), output = path.join(root, 'output')
   const env = {
     TIINY_3D_HOME: path.join(root, 'native-3d'), TIINY_VIDEO_HOME: home, TIINY_OUTPUT_DIR: output, TIINY_BASE_URL: `${ORIGIN}/v1`, TIINY_API_KEY: KEY,

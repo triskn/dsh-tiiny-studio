@@ -1484,7 +1484,7 @@ async function workspaceFiles({dir, saved}) {
     if (stat) files.push({ file, version: fileVersion(stat) })
   }
   // Keep original task evidence until all non-journal entries are gone.
-  return files.sort((a, b) => Number(a.file.endsWith('/run.json')) - Number(b.file.endsWith('/run.json')))
+  return files.sort((a, b) => Number(path.basename(a.file) === 'run.json') - Number(path.basename(b.file) === 'run.json'))
 }
 function finalPath(final) {
   if (!final || !fileNameOf(final.file) || !/\.glb$/i.test(final.file) || typeof final.path !== 'string' || !path.isAbsolute(final.path) || path.resolve(final.path) !== final.path || path.basename(final.path) !== final.file) throw unsafeFile()

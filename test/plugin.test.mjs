@@ -17,12 +17,13 @@ let route, mediaTool
 const credentials = new Map()
 
 before(async () => {
-  dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tiiny-video-test-'))
+  const tempDir = await fs.realpath(os.tmpdir())
+  dataDir = await fs.mkdtemp(path.join(tempDir, 'tiiny-video-test-'))
   // Read by the module at import time, so it has to be set before the import.
   process.env.TIINY_VIDEO_HOME = dataDir
   process.env.TIINY_3D_HOME = path.join(dataDir, 'native-3d')
   // Keep /jobs away from whatever the developer really rendered.
-  outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tiiny-video-out-'))
+  outputDir = await fs.mkdtemp(path.join(tempDir, 'tiiny-video-out-'))
   process.env.TIINY_OUTPUT_DIR = outputDir
   delete process.env.TIINY_API_KEY
   delete process.env.TIINY_BASE_URL

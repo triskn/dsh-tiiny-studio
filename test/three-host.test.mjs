@@ -11,7 +11,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { Readable, Writable } from 'node:stream'
 
-const home = await fs.mkdtemp(path.join(os.tmpdir(), 'tiiny-3d-test-'))
+const tempDir = await fs.realpath(os.tmpdir())
+const home = await fs.mkdtemp(path.join(tempDir, 'tiiny-3d-test-'))
 process.env.TIINY_3D_HOME = home
 process.env.TIINY_3D_POLL_MS = '5'
 process.env.TIINY_3D_CANCEL_CONFIRM_MS = '60'
@@ -346,7 +347,7 @@ const launch = (args = {}) => invoke({ method:'POST', url:'/tiiny-video/3d/launc
 after(async () => {
   app?.dispose()
   await new Promise((resolve) => server.close(resolve))
-  assert.equal(path.dirname(path.resolve(home)), path.resolve(os.tmpdir()))
+  assert.equal(path.dirname(home), tempDir)
   assert.ok(path.basename(home).startsWith('tiiny-3d-test-'))
   await fs.rm(home, { recursive: true, force: true })
 })

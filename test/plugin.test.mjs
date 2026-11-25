@@ -25,6 +25,9 @@ before(async () => {
   // Keep /jobs away from whatever the developer really rendered.
   outputDir = await fs.mkdtemp(path.join(tempDir, 'tiiny-video-out-'))
   process.env.TIINY_OUTPUT_DIR = outputDir
+  // The mocked clip contains fixture bytes and never needs system media tools.
+  process.env.TIINY_FFMPEG = path.join(dataDir, 'no-ffmpeg')
+  process.env.TIINY_FFPROBE = path.join(dataDir, 'no-ffprobe')
   delete process.env.TIINY_API_KEY
   delete process.env.TIINY_BASE_URL
 
@@ -185,15 +188,15 @@ test('one image goes to the requested frame and the same job survives a temporar
     assert.equal(accepted.status, 200)
     const { id } = accepted.json
     assert.equal(accepted.json.frameMode, frameMode || 'first')
-    const historyFile = path.join(dataDir, 'history.json')
-    let saved
-    for (let attempt = 0; attempt < 1500 && !saved; attempt++) {
+    // Wait for the Host to finish writing before reading its history file.
+    const deadline = Date.now() + 15000
+    while ((await call({ pathname: '/activity' })).json.busy) {
+      assert.ok(Date.now() < deadline, 'the video job should release its device lease')
       await new Promise((resolve) => setTimeout(resolve, 10))
-      const history = JSON.parse(await fs.readFile(historyFile, 'utf8').catch(() => '[]'))
-      // The new Host journals inputs before submission as well as the terminal result.
-      saved = history.find((entry) => entry.id === id && entry.status !== 'running')
     }
-    assert.equal(saved?.status, 'completed')
+    const history = JSON.parse(await fs.readFile(path.join(dataDir, 'history.json'), 'utf8'))
+    const saved = history.find((entry) => entry.id === id)
+    assert.equal(saved?.status, 'completed', saved?.error)
     assert.equal(saved.frameMode, frameMode || 'first')
     assert.deepEqual(await fs.readFile(path.join(outputDir, saved.file)), mockFile)
     assert.equal((await removeVideo(id)).status, 200)

@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Tiiny Video",
-    "description": "Generate short videos on your Tiiny with a prompt and an optional first or last frame, then preview or delete the saved clips."
+    "title": "Tiiny Studio",
+    "description": "Create images, videos and textured 3D models in one workspace. Use an image as a video frame or 3D reference, retry saved jobs, and manage jobs and output files separately. Switching tabs never loads a model."
   }
 }

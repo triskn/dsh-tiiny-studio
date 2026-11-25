@@ -13,12 +13,14 @@ import path from 'node:path'
 
 let dataDir
 let outputDir
-let route
+let route, mediaTool
+const credentials = new Map()
 
 before(async () => {
   dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tiiny-video-test-'))
   // Read by the module at import time, so it has to be set before the import.
   process.env.TIINY_VIDEO_HOME = dataDir
+  process.env.TIINY_3D_HOME = path.join(dataDir, 'native-3d')
   // Keep /jobs away from whatever the developer really rendered.
   outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tiiny-video-out-'))
   process.env.TIINY_OUTPUT_DIR = outputDir
@@ -29,10 +31,15 @@ before(async () => {
   const registered = []
   apply({
     effect: (fn) => fn(),
+    credentials: {
+      readRecord: async key => credentials.get(key),
+      modifyRecord: async (key, change) => { const next = await change(credentials.get(key)); credentials.set(key, next); return next },
+    },
+    tools: { register: (value) => { mediaTool = value; return () => {} } },
     webServer: { register: (value) => registered.push(value) },
   })
-  assert.equal(registered.length, 1, 'plugin should register exactly one route')
-  route = registered[0]
+  assert.deepEqual(registered.map(r => r.path).sort(), ['/tiiny-video', '/tiiny-video/3d'])
+  route = registered.find(r => r.path === '/tiiny-video')
 })
 
 after(async () => {
@@ -97,7 +104,8 @@ test('POST /settings persists the key but never echoes it', async () => {
   assert.equal(json.baseUrl, 'http://device.test:8000/v1')
 
   const onDisk = JSON.parse(await fs.readFile(path.join(dataDir, 'settings.json'), 'utf8'))
-  assert.equal(onDisk.apiKey, 'test-key')
+  assert.equal(onDisk.apiKey, undefined, 'new keys belong to the Harness credential store, not settings.json')
+  assert.equal([...credentials.values()].at(-1)?.key, 'test-key')
 
   if (process.platform !== 'win32') {
     const stat = await fs.stat(path.join(dataDir, 'settings.json'))
@@ -181,7 +189,8 @@ test('one image goes to the requested frame and the same job survives a temporar
     for (let attempt = 0; attempt < 1500 && !saved; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 10))
       const history = JSON.parse(await fs.readFile(historyFile, 'utf8').catch(() => '[]'))
-      saved = history.find((entry) => entry.id === id)
+      // The new Host journals inputs before submission as well as the terminal result.
+      saved = history.find((entry) => entry.id === id && entry.status !== 'running')
     }
     assert.equal(saved?.status, 'completed')
     assert.equal(saved.frameMode, frameMode || 'first')
@@ -238,10 +247,30 @@ test('delete handles disk-only videos and failed history without touching other 
   for (const id of ['file:../existing clip.mp4', 'file:..\\existing clip.mp4', 'file:notes.txt']) {
     assert.equal((await removeVideo(id)).status, 400)
   }
-  assert.equal((await removeVideo('file:existing clip.mp4')).status, 200)
-  assert.equal((await removeVideo('file:existing clip.mp4')).status, 200)
+  assert.equal((await removeVideo('file:existing clip.mp4')).status, 409, 'a stale name must not delete a different file when folders change')
+  const selected = (await call({ pathname: '/jobs' })).json.jobs.find(row => row.file === 'existing clip.mp4')
+  assert.equal(selected.exportPath, await fs.realpath(saved))
+  assert.equal((await removeVideo(selected.id)).status, 200)
+  assert.equal((await removeVideo(selected.id)).status, 200, 'the exact now-missing selection remains idempotent')
   assert.equal((await removeVideo('failed-test')).status, 200)
   await assert.rejects(fs.stat(saved), { code: 'ENOENT' })
   assert.equal(await fs.readFile(unrelated, 'utf8'), 'keep')
   assert.deepEqual((await call({ pathname: '/jobs' })).json.jobs, [])
+})
+
+test('agent reads the same legacy task as the panel, with lossless JSON and no loose optional keys', async () => {
+  assert.equal(mediaTool.name, 'tiiny_media')
+  const id = 'legacy-tool-record'
+  const file = path.join(dataDir, 'history.json')
+  const before = await fs.readFile(file)
+  try {
+    await fs.writeFile(file, JSON.stringify([{ id, prompt: 'Original saved prompt', status: 'failed', error: 'old device response', size: '832x480', seconds: 7 }]))
+    const listed = await mediaTool.execute({ action: 'list' })
+    assert.deepEqual(listed, JSON.parse(JSON.stringify(listed)))
+    assert.deepEqual(listed.jobs.map(j => [j.id, j.canRetry]), [[id, true]])
+    const got = await mediaTool.execute({ action: 'get', id })
+    assert.deepEqual(got, JSON.parse(JSON.stringify(got)))
+    assert.deepEqual(got, (await call({ pathname: '/job?id=' + id })).json)
+    assert.ok(got.canRetry)
+  } finally { await fs.writeFile(file, before) }
 })

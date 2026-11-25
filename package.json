@@ -1,7 +1,7 @@
 {
   "name": "dsh-tiiny-video",
-  "version": "1.0.0",
-  "description": "Tiiny Video for DeepSeek Harness. Generate short videos on your Tiiny device from a prompt and one optional first- or last-frame image.",
+  "version": "2.1.2",
+  "description": "Tiiny Studio for DeepSeek Harness: create pictures, videos and textured 3D models on your Tiiny. Reuse one image across media and native 3D without switching models behind your back.",
   "type": "module",
   "license": "MIT",
   "author": "Tiiny",
@@ -21,10 +21,15 @@
     "video",
     "text-to-video",
     "image-to-video",
-    "minimax"
+    "minimax",
+    "image-to-3d",
+    "hunyuan3d",
+    "glb",
+    "tiiny-studio"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=20.3",
+    "dsh": "^0.2.3-alpha.2"
   },
   "publishConfig": {
     "access": "public"
@@ -37,12 +42,24 @@
   },
   "files": [
     "index.js",
+    "workbench.js",
+    "media-files.js",
+    "activity.js",
+    "three/*.js",
+    "ui/*.part.js",
+    "build-client.mjs",
+    "persistence.js",
+    "device.js",
+    "video-api.js",
+    "assets.js",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg"
   ],
   "scripts": {
+    "build:client": "node build-client.mjs",
+    "check:client": "node build-client.mjs --check",
     "test": "node --test"
   },
   "dsh": {

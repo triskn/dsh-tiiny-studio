@@ -19,7 +19,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      # No dependencies: the plugin is plain Node ESM.
+      # The checked-in browser artifact must match its three workspace components.
+      - run: node build-client.mjs --check
       - run: node --test
 
   package:

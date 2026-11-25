@@ -216,9 +216,22 @@ test('retry a failed uploaded-frame video after restart and model correction, wi
   // Change the defaults as well: retry should use the corrected model but the
   // original prompt, shape and frame, not the new composition defaults.
   await fx.ok('/settings', { model: MODEL_B, size: '1344x768', seconds: 5 })
+  const rename = fs.rename
+  let blockedHistoryWrite = false
+  t.mock.method(fs, 'rename', async (source, target) => {
+    if (target === fx.historyFile && !blockedHistoryWrite) {
+      const rows = JSON.parse(await fs.readFile(source, 'utf8'))
+      if (rows.some(row => row.retryOf === first.id && row.status === 'completed')) {
+        blockedHistoryWrite = true
+        throw Object.assign(new Error('Test history file is temporarily locked'), { code: 'EPERM' })
+      }
+    }
+    return rename(source, target)
+  })
   const retry = await fx.ok('/retry', { id: first.id })
   assert.notEqual(retry.id, first.id)
   const done = await fx.terminal(retry.id)
+  assert.equal(blockedHistoryWrite, true)
   assert.equal(done.kind, 'video')
   assert.equal(done.model, MODEL_B)
   assert.equal(done.frameMode, 'last')

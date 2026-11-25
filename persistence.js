@@ -3,6 +3,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { setTimeout as delay } from 'node:timers/promises'
 import { assetStore, problem } from './assets.js'
 
 const oldPackage = path.dirname(fileURLToPath(import.meta.url))
@@ -78,7 +79,16 @@ export function createStore(credentials) {
     const tmp = path.join(dir, `.${path.basename(file)}.${randomUUID()}.tmp`)
     try {
       await fs.writeFile(tmp, JSON.stringify(data, null, 2) + '\n', { flag: 'wx', mode: 0o600 })
-      await fs.rename(tmp, file)
+      // Concurrent readers can briefly block atomic replacement on Windows.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await fs.rename(tmp, file)
+          break
+        } catch (error) {
+          if (attempt === 4 || !['EPERM', 'EBUSY', 'EACCES'].includes(error.code)) throw error
+          await delay(20 * (2 ** attempt))
+        }
+      }
     } finally { await fs.rm(tmp, { force: true }).catch(() => {}) }
   }
   function serial(fn) {

@@ -7,10 +7,10 @@ Tiiny Studio adds an English-language **Image**, **Video**, and **3D** workbench
 You need DSH Desktop 0.2.3-alpha.2 or a compatible build and a Tiiny device that exposes the APIs for the workflows you want to use.
 
 ```sh
-git clone https://github.com/triskn/dsh-tiiny-video.git
+git clone https://github.com/triskn/dsh-tiiny-studio.git
 ```
 
-1. In DSH Desktop, open **Plugins → Add plugin** and choose the local `dsh-tiiny-video` checkout.
+1. In DSH Desktop, open **Plugins → Add plugin** and choose the local `dsh-tiiny-studio` checkout.
 2. Enable the plugin, then open **Tiiny Studio** in the sidebar. Restart Harness after updating the plugin if it still shows an older version.
 3. Open **Image & video connection**, enter the device API base URL and key, and select **Save settings**. For 3D, open the **3D** tab and configure **3D connection settings** separately. Find the device key in **TiinyOS → Settings → API Key**.
 

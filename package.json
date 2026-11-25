@@ -5,13 +5,13 @@
   "type": "module",
   "license": "MIT",
   "author": "Tiiny",
-  "homepage": "https://github.com/triskn/dsh-tiiny-video#readme",
+  "homepage": "https://github.com/triskn/dsh-tiiny-studio#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/triskn/dsh-tiiny-video.git"
+    "url": "git+https://github.com/triskn/dsh-tiiny-studio.git"
   },
   "bugs": {
-    "url": "https://github.com/triskn/dsh-tiiny-video/issues"
+    "url": "https://github.com/triskn/dsh-tiiny-studio/issues"
   },
   "keywords": [
     "dsh-plugin",

@@ -109,6 +109,7 @@
         advanced: 'Advanced',
         generate: 'Generate complete model',
         generating: 'Generating…',
+        finalizing: 'Finalizing…',
         cancelRun: 'Cancel',
         cancelling: 'Cancelling…',
         cancelPendingHint: 'Waiting for the device to stop. New runs stay disabled until cancellation is confirmed.',
@@ -1479,7 +1480,8 @@
 
         const apiKeyReady = Boolean(settings?.hasApiKey)
         const running = run?.status === 'running'
-        const cancelling = running && Boolean(run?.cancelRequested)
+        const finalizing = Boolean(run?.finalizing)
+        const cancelling = running && !finalizing && Boolean(run?.cancelRequested)
         const stageRecords = run?.stages || {}
 
         const pickFile = useCallback(
@@ -2133,10 +2135,10 @@
                         disabled: writeBlocked || running || busy || launching || reading || !imageUrl || !apiKeyReady || !status?.ok,
                         title: !apiKeyReady ? t('needKeyFirst') : !imageUrl ? t('needImage') : !status?.ok ? t('needsRefresh') : '',
                         onClick: () => startRun()},
-                      running ? (cancelling ? t('cancelling') : t('generating')) : t('generate'),
+                      running ? (finalizing ? t('finalizing') : cancelling ? t('cancelling') : t('generating')) : t('generate'),
                     ),
                   ),
-                  running
+                  running && !finalizing
                     ? h(
                         'div',
                         { className: 't3d-row' },

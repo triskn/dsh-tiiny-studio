@@ -1647,8 +1647,13 @@ async function listRunArtifacts(run) {
 }
 
 function runView(run) {
+  // Keep clients polling until the export and history are saved and the device lease is released.
+  const finalizing = activeRunId === run.id && run.status !== 'running'
   return {
     ...serializeRun(run, true),
+    status: finalizing ? 'running' : run.status,
+    phase: finalizing ? 'finalizing' : run.phase,
+    finalizing,
     artifacts: undefined,
     outputDir: run.outputDir || '',
     stages: Object.fromEntries(
